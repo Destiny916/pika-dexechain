@@ -1,0 +1,189 @@
+#!/usr/bin/env bash
+# Local deploy and camera runtime control entry point.
+set -euo pipefail
+
+TOOL_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PIKA_MIGRATE_ROOT="$(cd "$TOOL_DIR/../.." && pwd)"
+export PIKA_MIGRATE_ROOT
+CONFIG_FILE="${PIKA_W1_CONFIG:-$TOOL_DIR/config.env}"
+[ -f "$CONFIG_FILE" ] || { echo "❌ 找不到配置：$CONFIG_FILE" >&2; exit 1; }
+source "$CONFIG_FILE"
+
+SSH_BIN="${SSH_BIN:-ssh}"
+SCP_BIN="${SCP_BIN:-scp}"
+REMOTE_INSTALLER="$TOOL_DIR/remote_install.sh"
+DRY_RUN=false
+WORK_DIR="$(mktemp -d /tmp/pika-w1-deploy.XXXXXX)"
+trap 'rm -rf -- "$WORK_DIR"' EXIT
+
+info(){ echo "▸ $*"; }
+ok(){ echo "✅ $*"; }
+fail(){ echo "❌ $*" >&2; exit 1; }
+
+usage(){
+  cat <<EOF
+用法：
+  $0 deploy <pc1|pc2|all> [--dry-run]
+  $0 <start|stop|status> <pc1|pc2>
+
+当前只实现 deploy：
+  pc1  上传并隔离解包 KFCv2 ARM64 deb
+  pc2  上传鱼眼启动脚本和 usb_camera.py，并检查运行依赖
+  all  依次部署 PC1、PC2
+
+运行控制：通过远端 current release 启停并查询对应相机，不触碰原有 W1 进程。
+
+--dry-run  只构建并校验本地部署包，不连接目标机
+配置文件：$CONFIG_FILE
+EOF
+}
+
+validate_remote_value(){
+  local label="$1" value="$2" pattern="$3"
+  [[ "$value" =~ $pattern ]] || fail "$label 含有不安全字符：$value"
+}
+
+build_bundle(){
+  local role="$1" bundle_dir stage manifest_hash deb_arch
+  bundle_dir="$WORK_DIR/$role"
+  stage="$bundle_dir/stage"
+  mkdir -p "$stage"
+
+  case "$role" in
+    pc1)
+      [ -f "$PC1_DEB" ] || fail "找不到 PC1 KFCv2 deb：$PC1_DEB"
+      command -v dpkg-deb >/dev/null || fail "本机缺少 dpkg-deb"
+      deb_arch="$(dpkg-deb -f "$PC1_DEB" Architecture)"
+      [ "$deb_arch" = "arm64" ] || fail "PC1 deb 架构必须是 arm64，实际为：$deb_arch"
+      mkdir -p "$stage/payload"
+      cp -a -- "$PC1_DEB" "$stage/payload/"
+      [ -f "$TOOL_DIR/payloads/pc1/control_kfc.sh" ] || fail "找不到 PC1 控制脚本"
+      mkdir -p "$stage/scripts"
+      install -m 0755 "$TOOL_DIR/payloads/pc1/control_kfc.sh" "$stage/scripts/"
+      ;;
+    pc2)
+      [ -f "$PC2_PAYLOAD_DIR/start_pika_fisheye_compressors.sh" ] \
+        || fail "找不到 PC2 鱼眼脚本：$PC2_PAYLOAD_DIR/start_pika_fisheye_compressors.sh"
+      [ -f "$PC2_PAYLOAD_DIR/usb_camera.py" ] \
+        || fail "找不到 PC2 相机节点：$PC2_PAYLOAD_DIR/usb_camera.py"
+      mkdir -p "$stage/scripts"
+      install -m 0755 "$PC2_PAYLOAD_DIR/start_pika_fisheye_compressors.sh" "$stage/scripts/"
+      install -m 0755 "$PC2_PAYLOAD_DIR/usb_camera.py" "$stage/scripts/"
+      install -m 0755 "$TOOL_DIR/payloads/pc2/control_fisheye.sh" "$stage/scripts/"
+      ;;
+    *) fail "未知角色：$role" ;;
+  esac
+
+  printf 'FORMAT_VERSION=1\nROLE=%s\n' "$role" > "$stage/metadata.env"
+  (
+    cd "$stage"
+    find . -type f ! -name manifest.sha256 -print0 \
+      | LC_ALL=C sort -z \
+      | xargs -0 sha256sum > manifest.sha256
+  )
+  manifest_hash="$(sha256sum "$stage/manifest.sha256" | awk '{print $1}')"
+  BUNDLE_ID="$role-${manifest_hash:0:12}"
+  ARCHIVE="$bundle_dir/pika-w1-$BUNDLE_ID.tar.gz"
+  tar czf "$ARCHIVE" -C "$stage" .
+  export BUNDLE_ID ARCHIVE
+}
+
+show_bundle(){
+  local role="$1"
+  info "$role bundle: $BUNDLE_ID"
+  echo "  archive: $ARCHIVE"
+  echo "  size:    $(du -h "$ARCHIVE" | awk '{print $1}')"
+  tar tzf "$ARCHIVE" | sed 's/^/  /'
+}
+
+deploy_role(){
+  local role="$1" host install_root remote_archive control_dir control_path
+  local -a ssh_opts
+
+  case "$role" in
+    pc1) host="$PC1_HOST"; install_root="$PC1_INSTALL_ROOT" ;;
+    pc2) host="$PC2_HOST"; install_root="$PC2_INSTALL_ROOT" ;;
+    *) fail "未知角色：$role" ;;
+  esac
+
+  validate_remote_value "$role host" "$host" '^[a-zA-Z0-9._@-]+$'
+  validate_remote_value "$role install root" "$install_root" '^/home/[a-zA-Z0-9._-]+/workspace/pika_w1$'
+  [ -f "$REMOTE_INSTALLER" ] || fail "缺少远端安装器：$REMOTE_INSTALLER"
+
+  build_bundle "$role"
+  show_bundle "$role"
+  if [ "$DRY_RUN" = true ]; then
+    ok "$role dry-run 通过"
+    return
+  fi
+
+  remote_archive="/tmp/pika-w1-$BUNDLE_ID.tar.gz"
+  control_dir="$WORK_DIR/control-$role"
+  control_path="$control_dir/socket"
+  mkdir -p "$control_dir"
+  ssh_opts=(
+    -o StrictHostKeyChecking=accept-new
+    -o ControlMaster=auto
+    -o ControlPersist=60
+    -o ControlPath="$control_path"
+  )
+
+  info "连接 $role：$host（本工具不会保存密码）"
+  "$SSH_BIN" "${ssh_opts[@]}" -N -f "$host" || fail "无法连接 $host"
+
+  if ! "$SCP_BIN" "${ssh_opts[@]}" "$ARCHIVE" "$host:$remote_archive"; then
+    "$SSH_BIN" -S "$control_path" -O exit "$host" >/dev/null 2>&1 || true
+    fail "上传 $role 部署包失败"
+  fi
+
+  if ! "$SSH_BIN" "${ssh_opts[@]}" "$host" bash -s -- \
+      "$install_root" "$BUNDLE_ID" "$role" "$remote_archive" < "$REMOTE_INSTALLER"; then
+    "$SSH_BIN" -S "$control_path" -O exit "$host" >/dev/null 2>&1 || true
+    fail "$role 远端安装失败"
+  fi
+
+  "$SSH_BIN" -S "$control_path" -O exit "$host" >/dev/null 2>&1 || true
+  ok "$role deploy 成功"
+}
+
+control_role(){
+  local action="$1" role="$2" host install_root control_dir control_path
+  local -a ssh_opts
+  case "$role" in
+    pc1) host="$PC1_HOST"; install_root="$PC1_INSTALL_ROOT"; control_script="control_kfc.sh" ;;
+    pc2) host="$PC2_HOST"; install_root="$PC2_INSTALL_ROOT"; control_script="control_fisheye.sh" ;;
+    *) fail "未知角色：$role" ;;
+  esac
+  validate_remote_value "$role host" "$host" '^[a-zA-Z0-9._@-]+$'
+  validate_remote_value "$role install root" "$install_root" '^/home/[a-zA-Z0-9._-]+/workspace/pika_w1$'
+  case "$action" in start|stop|status) ;; *) fail "未知操作：$action" ;; esac
+  control_dir="$WORK_DIR/control-$role-$action"; control_path="$control_dir/socket"; mkdir -p "$control_dir"
+  ssh_opts=(-o StrictHostKeyChecking=accept-new -o ControlMaster=auto -o ControlPersist=60 -o ControlPath="$control_path")
+  info "连接 $role：$host"
+  "$SSH_BIN" "${ssh_opts[@]}" -N -f "$host" || fail "无法连接 $host"
+  if ! "$SSH_BIN" "${ssh_opts[@]}" "$host" bash -s -- "$install_root" "$control_script" "$action" <<'REMOTE_CONTROL'; then
+set -euo pipefail
+root="$1"; script="$2"; action="$3"
+[ -L "$root/current" ] || { echo "❌ 未找到已部署的 current：$root/current" >&2; exit 1; }
+control="$root/current/scripts/$script"
+[ -x "$control" ] || { echo "❌ 当前 release 缺少控制脚本：$control" >&2; exit 1; }
+exec "$control" "$action"
+REMOTE_CONTROL
+    "$SSH_BIN" -S "$control_path" -O exit "$host" >/dev/null 2>&1 || true
+    fail "$role $action 失败"
+  fi
+  "$SSH_BIN" -S "$control_path" -O exit "$host" >/dev/null 2>&1 || true
+}
+
+command="${1:-}"
+if [ "$command" = deploy ]; then
+  target="${2:-}"
+  case "${3:-}" in "") ;; --dry-run) DRY_RUN=true ;; *) usage; exit 2 ;; esac
+  [ "$#" -le 3 ] || { usage; exit 2; }
+  case "$target" in pc1|pc2) deploy_role "$target" ;; all) deploy_role pc1; deploy_role pc2 ;; *) usage; exit 2 ;; esac
+elif [[ "$command" =~ ^(start|stop|status)$ ]]; then
+  [ "$#" -eq 2 ] || { usage; exit 2; }
+  control_role "$command" "$2"
+else
+  usage; exit 2
+fi

@@ -1,0 +1,1 @@
+SUBSYSTEM=="video4linux", ATTRS{idVendor}=="1f3b", ATTRS{idProduct}=="1021", ENV{ID_V4L_CAPABILITIES}=="*:capture:*", GROUP="video", MODE="0660", SYMLINK+="kfcv2-camera"
