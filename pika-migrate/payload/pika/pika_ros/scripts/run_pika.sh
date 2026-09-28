@@ -41,6 +41,11 @@ if [ -z "${DATA_TYPE:-}" ]; then
     *) DATA_TYPE="multi_pika" ;;
   esac
 fi
+CAPTURE_TRIGGER_MODE="${CAPTURE_TRIGGER_MODE:-space}"
+case "$CAPTURE_TRIGGER_MODE" in
+  space|gripper) ;;
+  *) echo "[run_pika] ❌ CAPTURE_TRIGGER_MODE 只能是 space 或 gripper，当前为 $CAPTURE_TRIGGER_MODE" >&2; exit 1 ;;
+esac
 if [ -z "${CAPTURE_HZ:-}" ]; then
   case "$HEAD_CAMERA_DRIVER" in
     kfcv2) CAPTURE_HZ=10 ;;
@@ -243,18 +248,34 @@ done
 NEXT=$(( max + 1 ))
 
 echo "[run_pika] 本次采集 → episode$NEXT  (目录: $DATASET_DIR/episode$NEXT)"
-echo "[run_pika] 采集配置: type=$DATA_TYPE  head_camera=$HEAD_CAMERA_DRIVER  hz=$CAPTURE_HZ"
+echo "[run_pika] 采集配置: type=$DATA_TYPE  head_camera=$HEAD_CAMERA_DRIVER  hz=$CAPTURE_HZ  trigger=$CAPTURE_TRIGGER_MODE"
 [ -n "$INSTRUCTION" ] && echo "[run_pika] 语言标注: $INSTRUCTION"
-echo "[run_pika] >>> 按空格开始录制,再次按空格结束;q 或 Ctrl+C 收尾并退出。"
+if [ "$CAPTURE_TRIGGER_MODE" = "space" ]; then
+  echo "[run_pika] >>> 按空格或踩踏板开始录制,再次按下结束;q 或 Ctrl+C 收尾并退出。"
+else
+  echo "[run_pika] >>> 双击任一夹爪开始/结束录制;Ctrl+C 收尾并退出。"
+fi
 echo
 
-# --- 3) 启动采集节点,由空格客户端调用 capture_service ---
-CAPTURE_BIN="$PIKA_DIR/pika_ros/install/data_tools/lib/data_tools/data_tools_dataCapture"
-CAPTURE_CONFIG="$PIKA_DIR/pika_ros/install/data_tools/share/data_tools/config/${DATA_TYPE}_data_params.yaml"
-CAPTURE_LOG="/tmp/run_pika_capture_$$.log"
+# --- 3) 启动采集节点：空格模式由终端客户端调用服务；夹爪模式由夹爪节点调用服务 ---
 TASK_NAME="${UNIVIS_RELPATH:-$(basename "$DATASET_DIR")}"
 INSTRUCTION_PARAM='[null]'
 [ -n "$INSTRUCTION" ] && INSTRUCTION_PARAM="[\"$INSTRUCTION\"]"
+
+if [ "$CAPTURE_TRIGGER_MODE" = "gripper" ]; then
+  ros2 launch data_tools run_data_capture.launch.py \
+    type:="$DATA_TYPE" \
+    useService:=true \
+    datasetDir:="$DATASET_DIR" \
+    episodeIndex:="$NEXT" \
+    instructions:="$INSTRUCTION_PARAM" \
+    hz:="$CAPTURE_HZ" \
+    timeout:="$TIMEOUT"
+  rc=$?
+else
+CAPTURE_BIN="$PIKA_DIR/pika_ros/install/data_tools/lib/data_tools/data_tools_dataCapture"
+CAPTURE_CONFIG="$PIKA_DIR/pika_ros/install/data_tools/share/data_tools/config/${DATA_TYPE}_data_params.yaml"
+CAPTURE_LOG="/tmp/run_pika_capture_$$.log"
 
 STATE=IDLE
 ACTIVE_EP=-1
@@ -447,6 +468,7 @@ done
 trap - INT TERM
 capture_cleanup
 rc=0
+fi
 
 # --- 4) 采集结束后体检 —— 一次 launch 可能录多条 ---
 # 空格控制器每"开始→结束"一轮生成一个 episode;一次运行可连续录多条。

@@ -10,6 +10,21 @@ from launch.launch_description_sources import PythonLaunchDescriptionSource
 
 
 def generate_launch_description():
+    capture_trigger_mode = os.environ.get('CAPTURE_TRIGGER_MODE', 'space').strip().lower()
+    if capture_trigger_mode not in ('space', 'gripper'):
+        raise RuntimeError(
+            f'CAPTURE_TRIGGER_MODE must be space or gripper, got {capture_trigger_mode!r}'
+        )
+    l_capture_service = (
+        '/data_tools_dataCapture/capture_service'
+        if capture_trigger_mode == 'gripper'
+        else '/disabled/gripper_capture_service_l'
+    )
+    r_capture_service = (
+        '/data_tools_dataCapture/capture_service'
+        if capture_trigger_mode == 'gripper'
+        else '/disabled/gripper_capture_service_r'
+    )
 
     share_dir = get_package_share_directory('sensor_tools')
 
@@ -143,7 +158,7 @@ def generate_launch_description():
                 ('/joint_state_info', '/joint_states_l'),
                 ('/joint_state_gripper', '/joint_states_gripper_l'),
                 ('/teleop_trigger', 'teleop_trigger_l'),
-                ('/data_tools_dataCapture/capture_service', '/disabled/gripper_capture_service_l'),
+                ('/data_tools_dataCapture/capture_service', l_capture_service),
                 ('/data_capture_status', '/data_tools_dataCapture/status'),
                 ('/teleop_status', '/teleop_status_l'),
                 ('/localization_status', '/pika_localization_status_l'),
@@ -167,7 +182,7 @@ def generate_launch_description():
                 ('/joint_state_info', '/joint_states_r'),
                 ('/joint_state_gripper', '/joint_states_gripper_r'),
                 ('/teleop_trigger', 'teleop_trigger_r'),
-                ('/data_tools_dataCapture/capture_service', '/disabled/gripper_capture_service_r'),
+                ('/data_tools_dataCapture/capture_service', r_capture_service),
                 ('/data_capture_status', '/data_tools_dataCapture/status'),
                 ('/teleop_status', '/teleop_status_r'),
                 ('/localization_status', '/pika_localization_status_r'),

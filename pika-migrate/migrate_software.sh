@@ -285,6 +285,7 @@ install_usb_runtime_payload(){
     pika_ros/scripts/start_collect.sh
     pika_ros/scripts/run_pika.sh
     pika_ros/scripts/start_multi_sensor.bash
+    pika_ros/scripts/usb_switch_space.py
     pika_ros/src/sensor_tools/scripts/kfcv2_usb_publisher.py
   )
   local data_files=(

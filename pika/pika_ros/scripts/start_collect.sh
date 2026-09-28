@@ -47,6 +47,10 @@ HEAD_CAMERA_FPS="${HEAD_CAMERA_FPS:-30}"
 HEAD_CAMERA_MIN_FPS="${HEAD_CAMERA_MIN_FPS:-25}"
 CAPTURE_HZ="${CAPTURE_HZ:-}"
 CALIB_ACC_ERR_MAX="${CALIB_ACC_ERR_MAX:-0.005}"
+CAPTURE_TRIGGER_MODE="${CAPTURE_TRIGGER_MODE:-}"
+PEDAL_CONVERTER_SCRIPT="$SCRIPTS/usb_switch_space.py"
+PEDAL_CONVERTER_LOG="/tmp/pika_usb_switch_space.log"
+PEDAL_CONVERTER_PID=""
 
 c_g='\033[32m'; c_r='\033[31m'; c_y='\033[33m'; c_b='\033[36m'; c_0='\033[0m'
 info(){ echo -e "${c_b}▸${c_0} $*"; }
@@ -83,8 +87,69 @@ start_stack(){
     -e HEAD_CAMERA_HEIGHT="$HEAD_CAMERA_HEIGHT" \
     -e HEAD_CAMERA_FPS="$HEAD_CAMERA_FPS" \
     -e CAPTURE_HZ="$CAPTURE_HZ" \
+    -e CAPTURE_TRIGGER_MODE="$CAPTURE_TRIGGER_MODE" \
     "$CONTAINER" \
     bash -c "cd '$SCRIPTS' && bash start_multi_sensor.bash > '$SENSOR_LOG' 2>&1"
+}
+
+choose_capture_trigger(){
+  local reply
+  echo
+  info "选择本次采集触发方式："
+  echo "    1) 空格/USB 踏板（踏板自动转换为空格）"
+  echo "    2) 双击夹爪"
+  while :; do
+    read -rp "请选择 [1/2，默认 1]: " reply || { echo; err "输入流结束，取消采集。"; exit 1; }
+    reply="${reply:-1}"
+    case "$reply" in
+      1|space|SPACE) CAPTURE_TRIGGER_MODE="space"; break ;;
+      2|gripper|GRIPPER) CAPTURE_TRIGGER_MODE="gripper"; break ;;
+      *) warn "无效输入，只能选择 1 或 2。" ;;
+    esac
+  done
+  if [ "$CAPTURE_TRIGGER_MODE" = "space" ]; then
+    ok "触发方式：空格/USB 踏板"
+  else
+    ok "触发方式：双击夹爪"
+  fi
+}
+
+start_pedal_converter(){
+  [ "$CAPTURE_TRIGGER_MODE" = "space" ] || return 0
+  [ -f "$PEDAL_CONVERTER_SCRIPT" ] || { err "缺少踏板转换器：$PEDAL_CONVERTER_SCRIPT"; return 1; }
+  command -v xdotool >/dev/null 2>&1 || { err "缺少 xdotool，无法把踏板输入转换为空格。"; return 1; }
+  info "空格模式：授权读取 USB 踏板（sudo 可能要求输入密码）…"
+  sudo -v || { err "sudo 授权失败，无法启动踏板转换器。"; return 1; }
+  sudo -n -E env \
+    DISPLAY="${DISPLAY:-:0}" \
+    XAUTHORITY="${XAUTHORITY:-$HOME/.Xauthority}" \
+    PYTHONPATH="$HOME/.local/lib/python3.10/site-packages" \
+    python3 "$PEDAL_CONVERTER_SCRIPT" >"$PEDAL_CONVERTER_LOG" 2>&1 &
+  PEDAL_CONVERTER_PID=$!
+  sleep 1
+  if ! sudo -n kill -0 "$PEDAL_CONVERTER_PID" 2>/dev/null; then
+    err "踏板转换器启动失败，日志：$PEDAL_CONVERTER_LOG"
+    sed -n '1,80p' "$PEDAL_CONVERTER_LOG" >&2
+    wait "$PEDAL_CONVERTER_PID" 2>/dev/null || true
+    PEDAL_CONVERTER_PID=""
+    return 1
+  fi
+  ok "USB 踏板转换器已启动：踏板按下 → 空格（日志：$PEDAL_CONVERTER_LOG）"
+}
+
+stop_pedal_converter(){
+  [ -n "$PEDAL_CONVERTER_PID" ] || return 0
+  if sudo -n kill -0 "$PEDAL_CONVERTER_PID" 2>/dev/null; then
+    sudo -n kill -INT "$PEDAL_CONVERTER_PID" 2>/dev/null || sudo kill -INT "$PEDAL_CONVERTER_PID" 2>/dev/null || true
+    for _ in 1 2 3 4 5 6 7 8 9 10; do
+      sudo -n kill -0 "$PEDAL_CONVERTER_PID" 2>/dev/null || break
+      sleep 0.1
+    done
+    sudo -n kill -0 "$PEDAL_CONVERTER_PID" 2>/dev/null && \
+      { sudo -n kill -TERM "$PEDAL_CONVERTER_PID" 2>/dev/null || sudo kill -TERM "$PEDAL_CONVERTER_PID" 2>/dev/null || true; }
+  fi
+  wait "$PEDAL_CONVERTER_PID" 2>/dev/null || true
+  PEDAL_CONVERTER_PID=""
 }
 
 kfcv2_topic_health(){
@@ -236,7 +301,7 @@ run_screening(){
 
 # ---- 退出时自动清理(q 退出 / Ctrl+C 都触发) ----
 # 先停设备栈放 dongle，再跑质检：设备先释放，质检慢点也不占着硬件。
-cleanup(){ echo; info "收尾：停设备栈、放 dongle …"; stop_stack; ok "已清理。下次 bash start_collect.sh 再来。"; run_screening; }
+cleanup(){ echo; info "收尾：停止踏板转换器、停设备栈、放 dongle …"; stop_pedal_converter; stop_stack; ok "已清理。下次 bash start_collect.sh 再来。"; run_screening; }
 
 # =============================================================================
 # ① 容器 + X11
@@ -257,6 +322,8 @@ RCODE="${PIKA_R_CODE:-}"
   exit 1
 }
 info "左右手 LHR：L=$LCODE  R=$RCODE"
+
+choose_capture_trigger
 
 # 选/建本次任务(决定数据落到哪个子目录)——趁还没起设备栈/挂 trap，此处中断无副作用
 choose_task
@@ -316,6 +383,8 @@ trap cleanup EXIT     # 起栈后才挂清理
 # ④ 健康自检(代替每天挥手核对)
 health_check || exit 1
 
+start_pedal_converter || exit 1
+
 # =============================================================================
 # ⑤ 采集循环
 # =============================================================================
@@ -323,7 +392,11 @@ health_check || exit 1
 # 校准阶段(上面)的 Ctrl+C 仍是"结束 force-calibrate 并继续",不受影响。
 trap 'echo; exit 130' INT TERM
 echo
-ok "设备就绪。回车进入采集 → 空格开始/结束录制(一轮可连录多条) → q 或 Ctrl+C 结束(都会自动清理)。"
+if [ "$CAPTURE_TRIGGER_MODE" = "space" ]; then
+  ok "设备就绪。回车进入采集 → 空格/踏板开始或结束录制(一轮可连录多条) → q 或 Ctrl+C 结束。"
+else
+  ok "设备就绪。回车进入采集 → 双击夹爪开始或结束录制(一轮可连录多条) → Ctrl+C 结束。"
+fi
 while true; do
   echo
   printf "%b" "${c_y}↩  [回车]开始采集 | 输入文字+回车=带语言标注 | q 退出: ${c_0}"
@@ -351,6 +424,7 @@ while true; do
     -e HEAD_CAMERA_HEIGHT="$HEAD_CAMERA_HEIGHT" \
     -e HEAD_CAMERA_FPS="$HEAD_CAMERA_FPS" \
     -e CAPTURE_HZ="$CAPTURE_HZ" \
+    -e CAPTURE_TRIGGER_MODE="$CAPTURE_TRIGGER_MODE" \
     -e ENABLE_HDF5_CONVERT="${ENABLE_HDF5_CONVERT:-false}" \
     -e HDF5_CONVERT_SCRIPT="${HDF5_CONVERT_SCRIPT:-}" \
     "$CONTAINER" \

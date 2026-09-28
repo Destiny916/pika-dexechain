@@ -32,6 +32,12 @@ head_camera_device="${HEAD_CAMERA_DEVICE:-/dev/kfcv2-camera}"
 head_camera_width="${HEAD_CAMERA_WIDTH:-3840}"
 head_camera_height="${HEAD_CAMERA_HEIGHT:-1080}"
 head_camera_fps="${HEAD_CAMERA_FPS:-30}"
+capture_trigger_mode="${CAPTURE_TRIGGER_MODE:-space}"
+case "$capture_trigger_mode" in
+    space|gripper) ;;
+    *) echo "[start_multi_sensor] invalid CAPTURE_TRIGGER_MODE=$capture_trigger_mode (expected space or gripper)" >&2; exit 1 ;;
+esac
+export CAPTURE_TRIGGER_MODE="$capture_trigger_mode"
 
 sudo chmod a+rw /dev/ttyUSB* 2>/dev/null || true
 sudo chmod a+rw /dev/video* 2>/dev/null || true
