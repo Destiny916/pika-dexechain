@@ -260,7 +260,10 @@ echo
 # --- 3) 启动采集节点：空格模式由终端客户端调用服务；夹爪模式由夹爪节点调用服务 ---
 TASK_NAME="${UNIVIS_RELPATH:-$(basename "$DATASET_DIR")}"
 INSTRUCTION_PARAM='[null]'
-[ -n "$INSTRUCTION" ] && INSTRUCTION_PARAM="[\"$INSTRUCTION\"]"
+[ -n "$INSTRUCTION" ] && INSTRUCTION_PARAM=$(/usr/bin/python3 -c \
+  'import json, sys; print(json.dumps([sys.argv[1]], ensure_ascii=False))' "$INSTRUCTION")
+# ROS parses -p values as YAML. Single-quoted YAML strings escape apostrophes by doubling them.
+INSTRUCTION_YAML=${INSTRUCTION_PARAM//\'/\'\'}
 LAUNCH_INSTRUCTION_PARAM='\[null\]'
 [ -n "$INSTRUCTION" ] && LAUNCH_INSTRUCTION_PARAM="\\[\\\"$INSTRUCTION\\\"\\]"
 
@@ -373,7 +376,7 @@ setsid "$CAPTURE_BIN" --ros-args \
   -p useService:=true \
   -p datasetDir:="$DATASET_DIR" \
   -p episodeIndex:="$NEXT" \
-  -p "instructions:='$INSTRUCTION_PARAM'" \
+  -p "instructions:='$INSTRUCTION_YAML'" \
   -p hz:="$CAPTURE_HZ" \
   -p timeout:="$TIMEOUT" \
   >"$CAPTURE_LOG" 2>&1 < /dev/null &
