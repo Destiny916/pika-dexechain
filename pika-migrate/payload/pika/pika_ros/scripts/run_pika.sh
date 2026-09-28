@@ -25,6 +25,12 @@
 # 注意:不能用 set -u —— ROS 的 setup.bash 内部会引用未绑定变量,set -u 下 source 会直接中断脚本
 set -o pipefail
 
+ensure_terminal_sane() {
+  [ -t 0 ] || return 0
+  stty sane 2>/dev/null || true
+}
+ensure_terminal_sane
+
 SCRIPT_DIR=$(dirname "$(readlink -f "$0")")
 PIKA_ROOT=$(readlink -f "$SCRIPT_DIR/../..")
 RUNTIME_ENV="${PIKA_RUNTIME_ENV:-$PIKA_ROOT/pika_runtime.env}"
@@ -347,6 +353,7 @@ end_episode() {
 }
 
 capture_cleanup() {
+  ensure_terminal_sane
   [ "$CLEANED_UP" = 1 ] && return 0
   CLEANED_UP=1
   trap - EXIT INT TERM
@@ -363,6 +370,7 @@ capture_cleanup() {
 }
 
 on_capture_signal() {
+  ensure_terminal_sane
   STOP_REQUESTED=1
   echo
   echo "[run_pika] 收到退出信号,正在安全收尾..."
@@ -456,8 +464,13 @@ echo "[run_pika] IDLE: 下一条 episode$(( $(highest_episode) + 1 ))"
 echo "[run_pika] 控制: 空格=开始/结束 | q=安全收尾并退出"
 trap on_capture_signal INT TERM
 while [ "$STOP_REQUESTED" = 0 ]; do
+  ensure_terminal_sane
   printf '[%s] > ' "$STATE"
-  IFS= read -rsn1 key || break
+  if ! IFS= read -rsn1 key; then
+    ensure_terminal_sane
+    break
+  fi
+  ensure_terminal_sane
   case "$key" in
     ' ')
       echo

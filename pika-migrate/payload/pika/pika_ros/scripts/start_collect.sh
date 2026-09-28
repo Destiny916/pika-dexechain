@@ -58,13 +58,14 @@ ok(){   echo -e "${c_g}✅ $*${c_0}"; }
 warn(){ echo -e "${c_y}⚠️  $*${c_0}"; }
 err(){  echo -e "${c_r}❌ $*${c_0}" >&2; }
 
-# survive-cli may leave the controlling terminal in raw mode when timeout sends SIGKILL.
-# Preserve the caller's terminal settings and restore them after every survive-cli run.
-ORIGINAL_TTY_STATE=$(stty -g 2>/dev/null || true)
-restore_terminal(){
-  [ -n "$ORIGINAL_TTY_STATE" ] || return 0
-  stty "$ORIGINAL_TTY_STATE" 2>/dev/null || stty sane 2>/dev/null || true
+# survive-cli or an interrupted single-key read may leave the controlling terminal in raw mode.
+# Do not restore an inherited state: a previous failed run may already have polluted it.
+ensure_terminal_sane(){
+  [ -t 0 ] || return 0
+  stty sane 2>/dev/null || true
 }
+restore_terminal(){ ensure_terminal_sane; }
+ensure_terminal_sane
 
 # ros2 launch 起的子节点(占着 dongle/相机)：locator 才是 dongle 持有者，必须一并清，
 # 否则只杀 launch 外壳会留下孤儿 → 下次 LIBUSB_BUSY 抢不到 dongle。
@@ -408,9 +409,11 @@ else
   ok "设备就绪。回车进入采集 → 双击夹爪开始或结束录制(一轮可连录多条) → Ctrl+C 结束。"
 fi
 while true; do
+  ensure_terminal_sane
   echo
   printf "%b" "${c_y}↩  [回车]开始采集 | 输入文字+回车=带语言标注 | q 退出: ${c_0}"
   IFS= read -r ans || { ans=q; echo; }
+  ensure_terminal_sane
   [ "$ans" = "q" ] && break
   stack_running || { warn "设备栈掉了，重启并自检…"; start_stack; health_check || continue; }
   # >>> pika-migrate: KFCv2 alignment >>>
@@ -439,5 +442,6 @@ while true; do
     -e HDF5_CONVERT_SCRIPT="${HDF5_CONVERT_SCRIPT:-}" \
     "$CONTAINER" \
     bash -c 'cd "$1" && bash run_pika.sh "$2"' _ "$SCRIPTS" "$ans"
+  ensure_terminal_sane
 done
 # 退出(q / Ctrl+C) → trap cleanup 自动停设备栈
