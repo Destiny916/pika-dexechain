@@ -58,6 +58,14 @@ ok(){   echo -e "${c_g}✅ $*${c_0}"; }
 warn(){ echo -e "${c_y}⚠️  $*${c_0}"; }
 err(){  echo -e "${c_r}❌ $*${c_0}" >&2; }
 
+# survive-cli may leave the controlling terminal in raw mode when timeout sends SIGKILL.
+# Preserve the caller's terminal settings and restore them after every survive-cli run.
+ORIGINAL_TTY_STATE=$(stty -g 2>/dev/null || true)
+restore_terminal(){
+  [ -n "$ORIGINAL_TTY_STATE" ] || return 0
+  stty "$ORIGINAL_TTY_STATE" 2>/dev/null || stty sane 2>/dev/null || true
+}
+
 # ros2 launch 起的子节点(占着 dongle/相机)：locator 才是 dongle 持有者，必须一并清，
 # 否则只杀 launch 外壳会留下孤儿 → 下次 LIBUSB_BUSY 抢不到 dongle。
 CHILD_PATTERN='open_multi_sensor|pika_double_locator|realsense2_camera|usb_camera|kfcv2_usb_publisher.py|rviz2|serial_gripper_imu'
@@ -301,7 +309,7 @@ run_screening(){
 
 # ---- 退出时自动清理(q 退出 / Ctrl+C 都触发) ----
 # 先停设备栈放 dongle，再跑质检：设备先释放，质检慢点也不占着硬件。
-cleanup(){ echo; info "收尾：停止踏板转换器、停设备栈、放 dongle …"; stop_pedal_converter; stop_stack; ok "已清理。下次 bash start_collect.sh 再来。"; run_screening; }
+cleanup(){ restore_terminal; echo; info "收尾：停止踏板转换器、停设备栈、放 dongle …"; stop_pedal_converter; stop_stack; ok "已清理。下次 bash start_collect.sh 再来。"; run_screening; }
 
 # =============================================================================
 # ① 容器 + X11
@@ -351,6 +359,7 @@ while :; do
   cal=$(docker exec "$CONTAINER" bash -c '
     export LD_LIBRARY_PATH='"$LIBSURVIVE"'/lib:$LD_LIBRARY_PATH
     cd '"$LIBSURVIVE"'/bin && timeout -k 5 20 ./survive-cli 2>&1')
+  restore_terminal
   if printf '%s\n' "$cal" | grep -q LIBUSB_ERROR_BUSY; then
     err "dongle 被占用(LIBUSB_BUSY)——先 docker exec $CONTAINER pkill -9 -f '$CHILD_PATTERN' 再重跑。"; exit 1
   fi
@@ -370,6 +379,7 @@ while :; do
        docker exec -it "$CONTAINER" bash -c '
          export LD_LIBRARY_PATH='"$LIBSURVIVE"'/lib:$LD_LIBRARY_PATH
          cd '"$LIBSURVIVE"'/bin && ./survive-cli --force-calibrate'
+       restore_terminal
        echo; info "校准退出,复检中…" ;;   # 回到 while 顶部重新探测确认
   esac
 done
