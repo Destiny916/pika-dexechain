@@ -283,6 +283,7 @@ install_usb_runtime_payload(){
   local executable_files=(
     docker_run.sh
     pika_ros/scripts/start_collect.sh
+    pika_ros/scripts/run_pika.sh
     pika_ros/scripts/start_multi_sensor.bash
     pika_ros/src/sensor_tools/scripts/kfcv2_usb_publisher.py
   )

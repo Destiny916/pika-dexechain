@@ -5,7 +5,7 @@
 # 一条命令从开机到进采集循环，退出自动清理。把这些样板合成一步：
 #   ① 起容器 + xhost   ② 校准自动判定(漂不漂，没挪基站就跳过)
 #   ③ 后台起设备栈      ④ 健康自检(软链 + pose 在发，代替每天挥手核对)
-#   ⑤ run_pika 采集循环(只管双击夹爪)；trap 退出时自动停设备栈、放 dongle
+#   ⑤ run_pika 采集循环(空格开始/结束录制)；trap 退出时自动停设备栈、放 dongle
 #
 # 用法：
 #   bash start_collect.sh         # 一条龙：起设备 → 进采集循环
@@ -323,7 +323,7 @@ health_check || exit 1
 # 校准阶段(上面)的 Ctrl+C 仍是"结束 force-calibrate 并继续",不受影响。
 trap 'echo; exit 130' INT TERM
 echo
-ok "设备就绪。回车开始采集 → 双击夹爪录制(一轮可连录多条) → 采完 Ctrl+C 或 q 结束(都会自动清理)。"
+ok "设备就绪。回车进入采集 → 空格开始/结束录制(一轮可连录多条) → q 或 Ctrl+C 结束(都会自动清理)。"
 while true; do
   echo
   printf "%b" "${c_y}↩  [回车]开始采集 | 输入文字+回车=带语言标注 | q 退出: ${c_0}"
