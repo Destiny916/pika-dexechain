@@ -303,7 +303,7 @@ cd /home/dex/app/pika && bash docker_run.sh
 ```bash
 cd /home/dex/app/pika/pika_ros
 sudo cp scripts/81-vive.rules /etc/udev/rules.d/
-sudo udevadm control --reload-rules && sudo udevadm trigger
+sudo udevadm control --reload-rules && sudo udevadm trigger --action=add
 ```
 
 ### 3.5　完善 install + 修复硬编码路径

@@ -25,7 +25,7 @@ bash start.bash
 or
 ```bash
 sudo sh -c 'echo "KERNEL==\"video*\", ATTRS{idVendor}==\"1bcf\", ATTRS{idProduct}==\"2cd1\", MODE:=\"0777\", SYMLINK+=\"video22\"" > /etc/udev/rules.d/fisheye.rules'
-sudo udevadm control --reload-rules && sudo service udev restart && sudo udevadm trigger
+sudo udevadm control --reload-rules && sudo service udev restart && sudo udevadm trigger --action=add
 
 sudo chmod a+rw /dev/ttyACM0
 sudo chmod a+rw /dev/video22

@@ -3,7 +3,7 @@ camera_fps=30
 camera_width=640
 camera_height=480
 sudo sh -c 'echo "KERNEL==\"video*\", ATTRS{idVendor}==\"1bcf\", ATTRS{idProduct}==\"2cd1\", MODE:=\"0777\", SYMLINK+=\"video50\"" > /etc/udev/rules.d/sensor_fisheye.rules'
-sudo udevadm control --reload-rules && sudo service udev restart && sudo udevadm trigger
+sudo udevadm control --reload-rules && sudo service udev restart && sudo udevadm trigger --action=add
 
 sudo chmod a+rw /dev/ttyUSB*
 sudo chmod a+rw /dev/video*
