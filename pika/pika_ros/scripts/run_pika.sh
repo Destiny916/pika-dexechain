@@ -261,6 +261,8 @@ echo
 TASK_NAME="${UNIVIS_RELPATH:-$(basename "$DATASET_DIR")}"
 INSTRUCTION_PARAM='[null]'
 [ -n "$INSTRUCTION" ] && INSTRUCTION_PARAM="[\"$INSTRUCTION\"]"
+LAUNCH_INSTRUCTION_PARAM='\[null\]'
+[ -n "$INSTRUCTION" ] && LAUNCH_INSTRUCTION_PARAM="\\[\\\"$INSTRUCTION\\\"\\]"
 
 if [ "$CAPTURE_TRIGGER_MODE" = "gripper" ]; then
   ros2 launch data_tools run_data_capture.launch.py \
@@ -268,7 +270,7 @@ if [ "$CAPTURE_TRIGGER_MODE" = "gripper" ]; then
     useService:=true \
     datasetDir:="$DATASET_DIR" \
     episodeIndex:="$NEXT" \
-    instructions:="$INSTRUCTION_PARAM" \
+    instructions:="$LAUNCH_INSTRUCTION_PARAM" \
     hz:="$CAPTURE_HZ" \
     timeout:="$TIMEOUT"
   rc=$?
