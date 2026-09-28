@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+import array
 import sys
 import time
 
@@ -15,7 +16,7 @@ def make_compressed_message(payload, stamp):
     message = CompressedImage()
     message.header.stamp = stamp
     message.format = "jpeg"
-    message.data = payload
+    message.data = array.array("B", payload)
     return message
 
 
